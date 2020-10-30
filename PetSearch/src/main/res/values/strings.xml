@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Pet Search(GCS)</string>
+    <string name="Positive">확인</string>
+    <string name="Negative">취소</string>
+
+    <string name="vehicle_arm">ARN</string>
+    <string name="vehicle_takeoff">TAKE OFF</string>
+    <string name="vehicle_land">LAND</string>
+    <string name="overlay_clear">Clear</string>
+    <string name="map_lock">추적 해제</string>
+    <string name="mission_send">임무 전송</string>
+
+    <string name="mission_set_ab_distance">AB 거리</string>
+    <string name="mission_up_ab_distance">+ 10</string>
+    <string name="mission_down_ab_distance">- 10</string>
+    <string name="mission_set_ab_position">AB\n좌표설정</string>
+
+    <string-array name="drone_connection_types">
+        <item>UDP</item>
+        <item>USB</item>
+    </string-array>
+</resources>
