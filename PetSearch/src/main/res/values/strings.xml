@@ -8,12 +8,15 @@
     <string name="vehicle_land">LAND</string>
     <string name="overlay_clear">Clear</string>
     <string name="map_lock">추적 해제</string>
-    <string name="mission_send">임무 전송</string>
 
-    <string name="mission_set_ab_distance">AB 거리</string>
+    <string name="mission_send">임무 전송</string>
+    <string name="mission_set_flight_distance">비행 거리</string>
+    <string name="mission_set_flight_width">비행 폭</string>
     <string name="mission_up_ab_distance">+ 10</string>
     <string name="mission_down_ab_distance">- 10</string>
+    <string name="mission_open_set_range">범위 설정</string>
     <string name="mission_set_ab_position">AB\n좌표설정</string>
+    <string name="mission_set_polygon_position">다각형\n좌표설정</string>
 
     <string-array name="drone_connection_types">
         <item>UDP</item>

@@ -3,18 +3,21 @@ package com.example.petsearch;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.support.annotation.UiThread;
 import android.support.design.widget.FloatingActionButton;
 import android.support.v4.app.FragmentManager;
 import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.DividerItemDecoration;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.animation.Animation;
@@ -26,7 +29,6 @@ import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import com.naver.maps.geometry.LatLng;
 import com.naver.maps.map.CameraAnimation;
@@ -40,15 +42,21 @@ import com.naver.maps.map.UiSettings;
 import com.naver.maps.map.overlay.Marker;
 
 import com.naver.maps.map.overlay.OverlayImage;
+import com.naver.maps.map.overlay.PolygonOverlay;
 import com.naver.maps.map.overlay.PolylineOverlay;
-import com.naver.maps.map.util.FusedLocationSource;
 import com.o3dr.android.client.ControlTower;
 import com.o3dr.android.client.Drone;
+import com.o3dr.android.client.apis.ExperimentalApi;
+import com.o3dr.android.client.apis.MissionApi;
+import com.o3dr.android.client.apis.solo.SoloCameraApi;
 import com.o3dr.android.client.interfaces.DroneListener;
+import com.o3dr.android.client.interfaces.LinkListener;
 import com.o3dr.android.client.interfaces.TowerListener;
 import com.o3dr.android.client.apis.ControlApi;
 import com.o3dr.android.client.apis.VehicleApi;
-import com.o3dr.services.android.lib.coordinate.LatLong;
+import com.o3dr.android.client.utils.video.DecoderListener;
+import com.o3dr.android.client.utils.video.MediaCodecManager;
+import com.o3dr.services.android.lib.coordinate.LatLongAlt;
 import com.o3dr.services.android.lib.drone.attribute.AttributeEvent;
 import com.o3dr.services.android.lib.drone.attribute.AttributeEventExtra;
 import com.o3dr.services.android.lib.drone.attribute.AttributeType;
@@ -56,44 +64,44 @@ import com.o3dr.services.android.lib.drone.companion.solo.SoloAttributes;
 import com.o3dr.services.android.lib.drone.companion.solo.SoloState;
 import com.o3dr.services.android.lib.drone.connection.ConnectionParameter;
 import com.o3dr.services.android.lib.drone.connection.ConnectionType;
+import com.o3dr.services.android.lib.drone.mission.Mission;
+import com.o3dr.services.android.lib.drone.mission.item.spatial.Waypoint;
 import com.o3dr.services.android.lib.drone.property.Altitude;
 import com.o3dr.services.android.lib.drone.property.Attitude;
 import com.o3dr.services.android.lib.drone.property.Battery;
 import com.o3dr.services.android.lib.drone.property.Gps;
-import com.o3dr.services.android.lib.drone.property.GuidedState;
 import com.o3dr.services.android.lib.drone.property.Speed;
 import com.o3dr.services.android.lib.drone.property.State;
 import com.o3dr.services.android.lib.drone.property.Type;
 import com.o3dr.services.android.lib.drone.property.VehicleMode;
+import com.o3dr.services.android.lib.gcs.link.LinkConnectionStatus;
 import com.o3dr.services.android.lib.model.AbstractCommandListener;
 import com.o3dr.services.android.lib.model.SimpleCommandListener;
 
-import org.w3c.dom.Text;
+import org.droidplanner.services.android.impl.utils.video.VideoManager;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.io.IOException;
+import java.util.*;
 
-import static com.naver.maps.map.CameraUpdate.toCameraPosition;
-
+import static com.o3dr.android.client.apis.ExperimentalApi.getApi;
 
 public class MainActivity extends AppCompatActivity implements OnMapReadyCallback, View.OnClickListener, DroneListener, TowerListener {
     // NaverMap
-    NaverMap mNaverMap;
+    private NaverMap mNaverMap;
     private Marker droneMarker = new Marker();
     private List<LatLng> poly = new ArrayList<>();
     private PolylineOverlay polylineOverlay = new PolylineOverlay();
     boolean mMapLock = true;
 
     // FAB UI
-    Animation fab_open, fab_close;
-    FloatingActionButton mFabMain, mFabBasic, mFabNavi, mFabSatellite, mFabHybrid, mFabTerrain;
-    Boolean openFlag = false;
+    private Animation fab_open, fab_close;
+    private FloatingActionButton mFabMain, mFabBasic, mFabNavi, mFabSatellite, mFabHybrid, mFabTerrain;
+    private Boolean openFlag = false;
 
     // DroneLogList
-    RecyclerView mDroneRecyclerView;
-    DroneLog mDroneLog;
-    ArrayList mDroneDataLog = new ArrayList();
+    private RecyclerView mDroneRecyclerView;
+    private DroneLog mDroneLog;
+    private ArrayList mDroneDataLog = new ArrayList();
 
     // Drone
     private Drone drone;
@@ -105,14 +113,25 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private Gps mGps;
     private Attitude mDroneYaw;
     private Float mYaw;
-    private double mFlightWidth;
-    private int mABDistance;
 
     boolean mClearValue = true;
 
-    private static final String TAG = "";
-    private static final int DEFAULT_UDP_PORT = 14550;
-    private static final int DEFAULT_USB_BAUD_RATE = 57600;
+    // Search Mission
+    private List<Marker> mSearchMarker = new ArrayList<>();
+    private List<Marker> mPolygonMarker = new ArrayList<>();
+    private List<LatLng> mSearchPolygon = new ArrayList<>();
+    private List<LatLng> mSearchPolyline = new ArrayList<>();
+
+    // Mission Overlay
+    private PolygonOverlay mSearchPolygonOverlay = new PolygonOverlay();
+    private PolylineOverlay mSearchPolylineOverlay = new PolylineOverlay();
+    private int mSearchMarkerCount = 0;
+    private int mGapCount = 0;
+    private int mReachedCount = 1;
+
+    // Mission distance,width init
+    private double mFlightWidth = 5.5; // 최초 비행폭 5.5M
+    private int mABDistance = 50; // 최초 AB거리값 50M
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -228,15 +247,12 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         });
     }
 
-
-
     @UiThread
     @Override
     public void onMapReady(@NonNull final NaverMap naverMap) {
         this.mNaverMap = naverMap;
         UiSettings uiSettings = naverMap.getUiSettings();
         alertUser("맵 로딩 완료");
-        alertUserError("지도를 클릭해 Home을 먼저 설정해 주세요.");
 
         // 최초 위치, 줌 설정 //
         CameraPosition cameraPosition = new CameraPosition(
@@ -251,8 +267,6 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         uiSettings.setZoomControlEnabled(false); // 줌 버튼 숨김
         naverMap.setMapType(NaverMap.MapType.Satellite); // 로딩 지도 위성
         naverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_TRANSIT, true); // 레이어 그룹 설정
-
-
     }
 
     // Drone Start //
@@ -288,6 +302,20 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     @Override
     public void onTowerDisconnected() {
         alertUser("DroneKiT-Android Interrupted");
+    }
+
+    private void checkSoloState() {
+        final SoloState soloState = drone.getAttribute(SoloAttributes.SOLO_STATE);
+        if (soloState == null) {
+            alertUser("Unable to retrieve the solo state.");
+        } else {
+            alertUser("Solo state is up to date.");
+        }
+    }
+
+    @Override
+    public void onDroneServiceInterrupted(String errorMsg) {
+
     }
 
     // Drone Listener //
@@ -353,6 +381,15 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 updateDroneLocation();
                 break;
 
+            case AttributeEvent.MISSION_SENT:
+                sendMission();
+                break;
+
+            case AttributeEvent.MISSION_ITEM_REACHED:
+                alertUser(mReachedCount + "번 WayPoint 도착 : " + mReachedCount + " / " + mSearchPolyline.size());
+                mReachedCount++;
+                break;
+
             case AttributeEvent.AUTOPILOT_ERROR:
                 String error;
                 error = extras.getString(AttributeEventExtra.EXTRA_AUTOPILOT_ERROR_ID, droneState.getAutopilotErrorId());
@@ -363,20 +400,6 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 // Log.i("DRONE_EVENT", event); //Uncomment to see events from the drone
                 break;
         }
-    }
-
-    private void checkSoloState() {
-        final SoloState soloState = drone.getAttribute(SoloAttributes.SOLO_STATE);
-        if (soloState == null) {
-            alertUser("Unable to retrieve the solo state.");
-        } else {
-            alertUser("Solo state is up to date.");
-        }
-    }
-
-    @Override
-    public void onDroneServiceInterrupted(String errorMsg) {
-
     }
 
     // UI Events //
@@ -449,7 +472,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             });
             alertDialog.show();
         } else if (!vehicleState.isConnected()) {
-            alertUser("Connect to a drone first");
+            alertUserError("먼저 드론을 연결해주세요.");
         } else {
             TextView title = dialogView.findViewById(R.id.title);
             title.setText("모터를 가동합니다.");
@@ -488,7 +511,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 @Override
                 public void onTimeout() {
-                    alertUser("시간초과. (Land)");
+                    alertUserError("시간초과. (Land)");
                 }
             });
         } else if (vehicleState.isArmed()) {
@@ -507,12 +530,12 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 @Override
                 public void onTimeout() {
-                    alertUser("시간초과. (Take off)");
+                    alertUserError("시간초과. (Take off)");
                 }
             });
         } else if (!vehicleState.isConnected()) {
             // Connect
-            alertUser("드론을 연결해주세요.");
+            alertUserError("드론을 연결해주세요.");
         } else {
             // Connected but not Armed
             VehicleApi.getApi(this.drone).arm(true, false, new AbstractCommandListener() {
@@ -528,7 +551,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 @Override
                 public void onTimeout() {
-                    alertUser("시간초과. (ARM)");
+                    alertUserError("시간초과. (ARM)");
                 }
             });
         }
@@ -540,8 +563,30 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
             poly.removeAll(poly);
             polylineOverlay.setMap(null);
+            mSearchPolylineOverlay.setMap(null);
+            mSearchPolygonOverlay.setMap(null);
 
-            mClearValue = false;
+            if (mSearchMarker.size() != 0) {
+                for (int i = 0; i < mSearchMarker.size(); i++) {
+                    mSearchMarker.get(i).setMap(null);
+                }
+            }
+
+            poly.clear();
+            mSearchMarker.clear();
+            mPolygonMarker.clear();
+            mSearchPolyline.clear();
+            mSearchPolygon.clear();
+
+            mSearchMarkerCount = 0;
+            mGapCount = 0;
+            mReachedCount = 1;
+
+            Button sendMissionButton = (Button) findViewById(R.id.btnSendMission);
+            sendMissionButton.setVisibility(View.INVISIBLE);
+
+            TextView sendMissionValue = (TextView) findViewById(R.id.btnSendMission);
+            sendMissionValue.setText(R.string.mission_send);
         } else {
             alertUserError("먼저 드론을 연결해 주세요.");
         }
@@ -580,13 +625,13 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         switch (view.getId()) {
             case R.id.btnUpDistance:
                 mABDistance += 10;
-                ABDistanceValue.setText(String.format("%dm\nAB거리", mABDistance));
+                ABDistanceValue.setText(String.format("%dm\n비행 거리", mABDistance));
                 break;
             case R.id.btnDownDistance:
 
                 if (mABDistance > 0) {
                     mABDistance -= 10;
-                    ABDistanceValue.setText(String.format("%dm\nAB거리", mABDistance));
+                    ABDistanceValue.setText(String.format("%dm\n비행 거리", mABDistance));
                 }
                 break;
         }
@@ -611,12 +656,12 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         switch (view.getId()) {
             case R.id.btnUpWidth:
                 mFlightWidth += 0.5;
-                widthValue.setText(String.format("%2.1fm\n비행폭", mFlightWidth));
+                widthValue.setText(String.format("%2.1fm\n비행 폭", mFlightWidth));
                 break;
             case R.id.btnDownWidth:
                 if (mFlightWidth > 0) {
                     mFlightWidth -= 0.5;
-                    widthValue.setText(String.format("%2.1fm\n비행폭", mFlightWidth));
+                    widthValue.setText(String.format("%2.1fm\n비행 폭", mFlightWidth));
                 }
                 break;
         }
@@ -660,11 +705,100 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
     }
 
+    public void onBtnSetRangeTap(View view) {
+        Button setSearchRangeButton = (Button) findViewById(R.id.btnSetSearchRange);
+        Button setPolygonRangeButton = (Button) findViewById(R.id.btnSetPolygonRange);
+        Button missionCancelButton = (Button) findViewById(R.id.btnMissionCancel);
+
+        if(setSearchRangeButton.getVisibility() == view.GONE) {
+            setSearchRangeButton.setVisibility(View.VISIBLE);
+            setPolygonRangeButton.setVisibility(View.VISIBLE);
+            missionCancelButton.setVisibility(View.VISIBLE);
+        } else {
+            setSearchRangeButton.setVisibility(View.GONE);
+            setPolygonRangeButton.setVisibility(View.GONE);
+            missionCancelButton.setVisibility(View.GONE);
+        }
+    }
+
+    public void onBtnSearchRangeTap(View view) {
+        Button setSearchRangeButton = (Button) findViewById(R.id.btnSetSearchRange);
+        Button missionCancelButton = (Button) findViewById(R.id.btnMissionCancel);
+        Button sendMissionButton = (Button) findViewById(R.id.btnSendMission);
+        Button setPolygonRangeButton = (Button) findViewById(R.id.btnSetPolygonRange);
+        TextView setRangeValue = (TextView) findViewById(R.id.btnSetRange);
+
+        switch (view.getId()) {
+            case R.id.btnSetSearchRange :
+                alertUser("지도를 클릭해 범위를 지정해주세요.(범위 탐색)");
+                mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, true);
+                mNaverMap.setOnMapClickListener(new NaverMap.OnMapClickListener() {
+                    @Override
+                    public void onMapClick(@NonNull PointF pointF, @NonNull LatLng latLng) {
+                        createSearchRange(latLng);
+                    }
+                });
+                setSearchRangeButton.setVisibility(View.GONE);
+                setPolygonRangeButton.setVisibility(View.GONE);
+                missionCancelButton.setVisibility(View.GONE);
+                setRangeValue.setText(R.string.mission_set_ab_position);
+                break;
+
+            case R.id.btnSetPolygonRange :
+                alertUser("지도를 클릭해 범위를 지정해주세요.(다각형)");
+                mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, true);
+                mNaverMap.setOnMapClickListener(new NaverMap.OnMapClickListener() {
+                    @Override
+                    public void onMapClick(@NonNull PointF pointF, @NonNull LatLng latLng) {
+                        createPolygonRange(latLng);
+                    }
+                });
+                setSearchRangeButton.setVisibility(View.GONE);
+                setPolygonRangeButton.setVisibility(View.GONE);
+                missionCancelButton.setVisibility(View.GONE);
+                setRangeValue.setText(R.string.mission_set_polygon_position);
+                break;
+
+            case R.id.btnMissionCancel :
+                alertUser("범위 설정을 취소합니다.");
+                mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, false);
+                mNaverMap.setOnMapClickListener(new NaverMap.OnMapClickListener() {
+                    @Override
+                    public void onMapClick(@NonNull PointF pointF, @NonNull LatLng latLng) {
+                        alertUserError("범위설정모드를 선택해주세요.");
+                    }
+                });
+
+                setSearchRangeButton.setVisibility(View.GONE);
+                setPolygonRangeButton.setVisibility(View.GONE);
+                missionCancelButton.setVisibility(View.GONE);
+                setRangeValue.setText(R.string.mission_open_set_range);
+                sendMissionButton.setVisibility(View.INVISIBLE);
+
+                mSearchPolylineOverlay.setMap(null);
+                mSearchPolygonOverlay.setMap(null);
+
+                if (mSearchMarker.size() != 0) {
+                    for (int i = 0; i < mSearchMarker.size(); i++) {
+                        mSearchMarker.get(i).setMap(null);
+                    }
+                }
+
+                mSearchMarker.clear();
+                mPolygonMarker.clear();
+                mSearchPolyline.clear();
+                mSearchPolygon.clear();
+
+                mSearchMarkerCount = 0;
+                mGapCount = 0;
+                mReachedCount = 1;
+                break;
+        }
+    }
+
     // UI Updating //
 
     public void updateDroneLocation() {
-        State vehicleState = this.drone.getAttribute(AttributeType.STATE);
-        VehicleMode vehicleMode = vehicleState.getVehicleMode();
         mGps = this.drone.getAttribute(AttributeType.GPS);
 
         LatLng droneLocation = new LatLng(mGps.getPosition().getLatitude(), mGps.getPosition().getLongitude());
@@ -674,10 +808,10 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             droneMarker.setPosition(droneLocation);
             droneMarker.setIcon(OverlayImage.fromResource(R.drawable.location_overlay_icon));
             droneMarker.setFlat(true);
-            droneMarker.setWidth(100);
-            droneMarker.setHeight(400);
+            droneMarker.setWidth(80);
+            droneMarker.setHeight(80);
             droneMarker.setMap(mNaverMap);
-            droneMarker.setAnchor(new PointF(0.5f, 0.85f));
+            droneMarker.setAnchor(new PointF(0.5f, 0.5f));
             droneMarker.setAngle(mYaw);
             mNaverMap.moveCamera(cameraUpdate);
 
@@ -694,10 +828,10 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             droneMarker.setPosition(droneLocation);
             droneMarker.setIcon(OverlayImage.fromResource(R.drawable.location_overlay_icon));
             droneMarker.setFlat(true);
-            droneMarker.setWidth(100);
-            droneMarker.setHeight(400);
+            droneMarker.setWidth(80);
+            droneMarker.setHeight(80);
             droneMarker.setMap(mNaverMap);
-            droneMarker.setAnchor(new PointF(0.5f, 0.85f));
+            droneMarker.setAnchor(new PointF(0.5f, 0.5f));
             droneMarker.setAngle(mYaw);
 
             poly.add(0, droneLocation);
@@ -722,12 +856,16 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         LinearLayout layoutDroneAttribute = findViewById(R.id.layoutDroneAttribute);
 
         TextView altitudeTextView = (TextView) findViewById(R.id.btnTakeOffAltitude);
+        TextView abDistanceTextView = (TextView) findViewById(R.id.btnABDistance);
+        TextView flightWidthTextView = (TextView) findViewById(R.id.btnFlightWidth);
 
         if (isConnected) {
             connectButton.setText("Disconnect");
             layoutARM.setVisibility(View.VISIBLE);
             layoutDroneAttribute.setVisibility(View.VISIBLE);
             altitudeTextView.setText(String.format("%2.1fm\n이륙고도", mDroneAltitude));
+            abDistanceTextView.setText(String.format("%dm\n비행 거리", mABDistance));
+            flightWidthTextView.setText(String.format("%2.1fm\n비행폭", mFlightWidth));
         } else {
             connectButton.setText("Connect");
             layoutARM.setVisibility(View.INVISIBLE);
@@ -747,8 +885,15 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     }
 
     protected void clearValue() {
+        Button sendMissionButton = (Button) findViewById(R.id.btnSendMission);
+        sendMissionButton.setVisibility(View.INVISIBLE);
+
+        TextView sendMissionValue = (TextView) findViewById(R.id.btnSendMission);
+        sendMissionValue.setText(R.string.mission_send);
+
         TextView voltageTextView = (TextView) findViewById(R.id.voltageValueTextView);
         voltageTextView.setText(String.format("0V")); // Clear voltage
+        voltageTextView.setTextColor(Color.WHITE);
 
         TextView altitudeTextView = (TextView) findViewById(R.id.altitudeValueTextView);
         altitudeTextView.setText(String.format("0m")); // Clear altitude
@@ -761,9 +906,31 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         TextView gpsTextView = (TextView) findViewById(R.id.gpsValueTextView);
         gpsTextView.setText(String.format("0")); // Clear GPS count
+        gpsTextView.setTextColor(Color.WHITE);
 
         droneMarker.setMap(null); // Clear drone marker
         polylineOverlay.setMap(null); // Clear path
+
+        poly.removeAll(poly);
+        polylineOverlay.setMap(null);
+        mSearchPolylineOverlay.setMap(null);
+        mSearchPolygonOverlay.setMap(null);
+
+        if (mSearchMarker.size() != 0) {
+            for (int i = 0; i < mSearchMarker.size(); i++) {
+                mSearchMarker.get(i).setMap(null);
+            }
+        }
+
+        poly.clear();
+        mSearchMarker.clear();
+        mPolygonMarker.clear();
+        mSearchPolyline.clear();
+        mSearchPolygon.clear();
+
+        mSearchMarkerCount = 0;
+        mGapCount = 0;
+        mReachedCount = 1;
     }
 
     protected void updateVoltage() { // Drone battery value
@@ -773,6 +940,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
         if (droneBattery.getBatteryVoltage() < 11) {
             voltageTextView.setTextColor(Color.RED);
+        } else {
+            voltageTextView.setTextColor(Color.WHITE);
         }
     }
 
@@ -922,5 +1091,291 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
             openFlag = true;
         }
+    }
+
+    // 탐색 미션 //
+
+    private void createSearchRange(LatLng latLng) {
+        // 범위 그리기
+        if (mGapCount < 2) {
+            Marker marker = new Marker();
+            marker.setPosition(latLng);
+
+            mSearchPolygon.add(latLng);
+            mSearchMarker.add(marker);
+            mSearchMarker.get(mSearchMarkerCount).setMap(mNaverMap);
+
+            if (mGapCount == 0) {
+                mSearchMarker.get(0).setIcon(OverlayImage.fromResource(R.drawable.ic_marker_apoint));
+                mSearchMarker.get(0).setWidth(50);
+                mSearchMarker.get(0).setHeight(50);
+                mSearchMarker.get(0).setAnchor(new PointF(0.5F, 0.5F));
+            } else if (mGapCount == 1) {
+                mSearchMarker.get(1).setIcon(OverlayImage.fromResource(R.drawable.ic_marker_bpoint));
+                mSearchMarker.get(1).setWidth(50);
+                mSearchMarker.get(1).setHeight(50);
+                mSearchMarker.get(1).setAnchor(new PointF(0.5F, 0.5F));
+            }
+
+            mGapCount++;
+            mSearchMarkerCount++;
+        }
+        if (mSearchMarkerCount == 2) {
+            double heading = MyUtil.computeHeading(mSearchMarker.get(0).getPosition(), mSearchMarker.get(1).getPosition());
+
+            LatLng latLng1 = MyUtil.computeOffset(mSearchMarker.get(1).getPosition(), mABDistance, heading + 90);
+            LatLng latLng2 = MyUtil.computeOffset(mSearchMarker.get(0).getPosition(), mABDistance, heading + 90);
+
+            mSearchPolygon.add(latLng1);
+            mSearchPolygon.add(latLng2);
+            mSearchPolygonOverlay.setCoords(mSearchPolygon);
+
+            int colorLightGreen = getResources().getColor(R.color.colorLightGreen);
+
+            mSearchPolygonOverlay.setColor(colorLightGreen);
+            mSearchPolygonOverlay.setMap(mNaverMap);
+
+            createSearchPath();
+        }
+    }
+
+    private void createSearchPath() {
+        // 경로 생성
+        double heading = MyUtil.computeHeading(mSearchMarker.get(0).getPosition(), mSearchMarker.get(1).getPosition());
+
+        mSearchPolyline.add(new LatLng(mSearchMarker.get(0).getPosition().latitude, mSearchMarker.get(0).getPosition().longitude));
+        mSearchPolyline.add(new LatLng(mSearchMarker.get(1).getPosition().latitude, mSearchMarker.get(1).getPosition().longitude));
+
+        for (double sum = mFlightWidth; sum + mFlightWidth <= mABDistance + mFlightWidth; sum = sum + mFlightWidth) {
+            LatLng latLng1 = MyUtil.computeOffset(mSearchMarker.get(mSearchMarkerCount - 1).getPosition(), mFlightWidth, heading + 90);
+            LatLng latLng2 = MyUtil.computeOffset(mSearchMarker.get(mSearchMarkerCount - 2).getPosition(), mFlightWidth, heading + 90);
+
+            mSearchMarker.add(new Marker(latLng1));
+            mSearchMarker.add(new Marker(latLng2));
+            mSearchMarkerCount += 2;
+
+            mSearchPolyline.add(latLng1);
+            mSearchPolyline.add(latLng2);
+        }
+
+        mSearchPolylineOverlay.setColor(Color.WHITE);
+        mSearchPolylineOverlay.setCoords(mSearchPolyline);
+        mSearchPolylineOverlay.setMap(mNaverMap);
+        mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, false);
+        mNaverMap.setOnMapClickListener(null);
+
+        createMission();
+    }
+
+    private void createMission() {
+        // 미션 입력
+        final Mission mMission = new Mission();
+
+        for (int i = 0; i < mSearchPolyline.size(); i++) {
+            Waypoint waypoint = new Waypoint();
+            waypoint.setDelay(1);
+
+            LatLongAlt latLongAlt = new LatLongAlt(mSearchPolyline.get(i).latitude, mSearchPolyline.get(i).longitude, mDroneAltitude);
+            waypoint.setCoordinate(latLongAlt);
+
+            mMission.addMissionItem(waypoint);
+        }
+
+        final Button sendMissionButton = (Button) findViewById(R.id.btnSendMission);
+        final Button setRangeButton = (Button) findViewById(R.id.btnSetRange);
+        sendMissionButton.setVisibility(View.VISIBLE);
+
+
+        sendMissionButton.setOnClickListener(new Button.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (setRangeButton.getText().equals("AB\n좌표설정")) {
+                    if (sendMissionButton.getText().equals("임무 전송")) {
+                        if (mSearchPolygon.size() == 4) {
+                            setMission(mMission);
+                            alertUser("임무 전송");
+                        } else {
+                            alertUserError("A,B좌표 필요");
+                        }
+                    } else if (sendMissionButton.getText().equals("임무 시작")) {
+                        // Auto모드로 전환
+                        ChangeToAutoMode();
+                        sendMissionButton.setText("임무 중지");
+                        alertUser("임무 시작");
+                    } else if (sendMissionButton.getText().equals("임무 중지")) {
+                        pauseMission();
+                        ChangeToLoiterMode();
+                        sendMissionButton.setText("임무 재시작");
+                        alertUser("임무 중지");
+                    } else if (sendMissionButton.getText().equals("임무 재시작")) {
+                        ChangeToAutoMode();
+                        sendMissionButton.setText("임무 중지");
+                        alertUser("임무 재시작");
+                    }
+                } else if (setRangeButton.getText().equals("다각형\n좌표설정")) {
+                    if (sendMissionButton.getText().equals("임무 전송")) {
+                        if (mSearchPolygon.size() >= 3) {
+                            setMission(mMission);
+                            alertUser("임무 전송");
+                        } else {
+                            alertUserError("3개이상의 좌표를 선택해주세요.");
+                        }
+                    } else if (sendMissionButton.getText().equals("임무 시작")) {
+                        // Auto모드로 전환
+                        ChangeToAutoMode();
+                        sendMissionButton.setText("임무 중지");
+                        alertUser("임무 시작");
+                    } else if (sendMissionButton.getText().equals("임무 중지")) {
+                        pauseMission();
+                        ChangeToLoiterMode();
+                        sendMissionButton.setText("임무 재시작");
+                        alertUser("임무 중지");
+                    } else if (sendMissionButton.getText().equals("임무 재시작")) {
+                        ChangeToAutoMode();
+                        sendMissionButton.setText("임무 중지");
+                        alertUser("임무 재시작");
+                    }
+                }
+            }
+        });
+    }
+
+    private void setMission(Mission mMission) {
+        MissionApi.getApi(this.drone).setMission(mMission, true);
+    }
+
+    private void pauseMission() {
+        MissionApi.getApi(this.drone).pauseMission(null);
+    }
+
+    private void sendMission() {
+        alertUser("미션 업로드 완료");
+        Button BtnSendMission = (Button) findViewById(R.id.btnSendMission);
+        BtnSendMission.setText("임무 시작");
+    }
+
+    // 다각형 그리기 //
+
+    private void createPolygonRange(LatLng latLng) {
+        mSearchPolygon.add(latLng);
+
+        Marker marker = new Marker();
+        marker.setPosition(latLng);
+        mSearchMarker.add(marker);
+
+
+        mSearchMarker.get(mSearchMarkerCount).setAnchor(new PointF(0.5F,1.0F));
+
+        mSearchMarker.get(mSearchMarkerCount).setMap(mNaverMap);
+
+        mSearchMarkerCount++;
+
+        mNaverMap.setOnMapLongClickListener(new NaverMap.OnMapLongClickListener() {
+            @Override
+            public void onMapLongClick(@NonNull PointF pointF, @NonNull LatLng latLng) {
+                if (mSearchPolygon.size() >= 2) {
+                    mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, false);
+                    mSearchPolygonOverlay.setCoords(mSearchPolygon);
+
+                    int colorLightBlue = getResources().getColor(R.color.colorLightGreen);
+
+                    mSearchPolygonOverlay.setColor(colorLightBlue);
+                    mSearchPolygonOverlay.setMap(mNaverMap);
+
+                    createPolygonPath();
+
+                    mNaverMap.setOnMapClickListener(null);
+                    mNaverMap.setOnMapLongClickListener(null);
+                } else {
+                    alertUserError("3개이상의 좌표를 선택해주세요.");
+                }
+            }
+        });
+    }
+
+    private void createPolygonPath() {
+        int i = 2;
+        boolean switchFlag = true;
+        mSearchPolyline.add(new LatLng(mSearchMarker.get(0).getPosition().latitude, mSearchMarker.get(0).getPosition().longitude));
+        mSearchPolyline.add(new LatLng(mSearchMarker.get(1).getPosition().latitude, mSearchMarker.get(1).getPosition().longitude));
+        mPolygonMarker.add(mSearchMarker.get(0));
+        mPolygonMarker.add(mSearchMarker.get(1));
+
+        for (double sum = mFlightWidth; sum + mFlightWidth <= mABDistance + mFlightWidth; sum = sum + mFlightWidth) {
+            double heading1 = MyUtil.computeHeading(mSearchMarker.get(1).getPosition(), mSearchMarker.get(2).getPosition());
+            double heading2 = MyUtil.computeHeading(mSearchMarker.get(0).getPosition(), mSearchMarker.get(mSearchMarkerCount - 1).getPosition());
+
+            if (switchFlag == true) {
+                LatLng latLng1 = MyUtil.computeOffset(mPolygonMarker.get(i - 1).getPosition(), mFlightWidth, heading1);
+                LatLng latLng2 = MyUtil.computeOffset(mPolygonMarker.get(i - 2).getPosition(), mFlightWidth, heading2);
+
+                mPolygonMarker.add(new Marker(latLng1));
+                mPolygonMarker.add(new Marker(latLng2));
+                i += 2;
+
+                mSearchPolyline.add(latLng1);
+                mSearchPolyline.add(latLng2);
+
+                switchFlag = false;
+            } else {
+                LatLng latLng1 = MyUtil.computeOffset(mPolygonMarker.get(i - 1).getPosition(), mFlightWidth, heading2);
+                LatLng latLng2 = MyUtil.computeOffset(mPolygonMarker.get(i - 2).getPosition(), mFlightWidth, heading1);
+
+                mPolygonMarker.add(new Marker(latLng1));
+                mPolygonMarker.add(new Marker(latLng2));
+                i += 2;
+
+                mSearchPolyline.add(latLng1);
+                mSearchPolyline.add(latLng2);
+
+                switchFlag = true;
+            }
+        }
+        mSearchPolylineOverlay.setColor(Color.WHITE);
+        mSearchPolylineOverlay.setCoords(mSearchPolyline);
+        mSearchPolylineOverlay.setMap(mNaverMap);
+        mNaverMap.setLayerGroupEnabled(NaverMap.LAYER_GROUP_CADASTRAL, false);
+
+        createMission();
+    }
+
+    // 비행모드 변경 //
+
+    private void ChangeToLoiterMode() {
+        VehicleApi.getApi(this.drone).setVehicleMode(VehicleMode.COPTER_LOITER, new SimpleCommandListener() {
+            @Override
+            public void onSuccess() {
+                alertUser("Loiter 모드로 변경 중...");
+            }
+
+            @Override
+            public void onError(int executionError) {
+                alertUser("Loiter 모드 변경 실패 : " + executionError);
+            }
+
+            @Override
+            public void onTimeout() {
+                alertUser("Loiter 모드 변경 실패");
+            }
+        });
+    }
+
+    private void ChangeToAutoMode() {
+        VehicleApi.getApi(this.drone).setVehicleMode(VehicleMode.COPTER_AUTO, new SimpleCommandListener() {
+            @Override
+            public void onSuccess() {
+                alertUser("Auto 모드로 변경 중...");
+            }
+
+            @Override
+            public void onError(int executionError) {
+                alertUser("Auto 모드 변경 실패 : " + executionError);
+            }
+
+            @Override
+            public void onTimeout() {
+                alertUser("Auto 모드 변경 실패.");
+            }
+        });
     }
 }
